@@ -1,0 +1,47 @@
+- name: Deploy Nginx on EC2
+  hosts: nginx_server
+  become: yes
+  vars:
+    github_tag: "{{ github_tag }}"
+    domain_name: "v{{ github_tag }}.testte.pp.ua"
+  tasks:
+
+    - name: Install Docker, Python pip 
+      become: true
+      shell: sudo yum install -y epel-release docker python3-pip # 
+
+
+    - name: Start Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Install Docker Compose
+      get_url:
+        url: "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-linux-x86_64"
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+
+
+    - name: Copy Docker and Nginx config files to EC2
+      copy:
+        src: ../docker/
+        dest: /home/ec2-user/nginx/
+        owner: ec2-user
+        group: ec2-user
+        mode: '0755'
+
+    - name: Run Docker Compose
+      command: /usr/local/bin/docker-compose up -d
+      args:
+        chdir: /home/ec2-user/nginx/
+
+    - name: Verify container is running
+      command: docker ps -a
+      register: docker_status
+      changed_when: false
+
+    - name: Display container status
+      debug:
+        msg: "{{ docker_status.stdout }}"

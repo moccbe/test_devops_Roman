@@ -1,0 +1,112 @@
+name: Deploy Nginx with Terraform, Docker, and Ansible
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  INSTANCE_TYPE: ${{ vars.INSTANCE_TYPE || 't2.micro' }}
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}  
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Extract tag name (e.g., v12 -> 12)
+      - name: Extract GitHub tag
+        id: tag
+        run: echo "TAG=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+
+      # Set up Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      # Configure AWS credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Initialize and apply Terraform
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: ./terraform
+        run: |
+          terraform apply -auto-approve \
+            -var "key_name=${{ secrets.AWS_KEY_NAME }}" \
+            -var "route53_zone_id=${{ secrets.ROUTE53_ZONE_ID }}" \
+            -var "github_tag=${{ env.TAG }}"
+
+      # Get instance IP and DNS name
+      - name: Get Terraform Outputs
+        working-directory: ./terraform
+        id: terraform_outputs
+        run: |
+          echo "INSTANCE_IP=$(terraform output -raw instance_ip)" >> $GITHUB_ENV
+          echo "DNS_NAME=$(terraform output -raw dns_name)" >> $GITHUB_ENV
+
+      # Set up Docker
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # Build and push Docker image
+      - name: Build and Push Docker Image
+        working-directory: ./docker
+        run: |
+          docker build -t ${{ env.DOCKER_USERNAME }}/nginx:${{ env.TAG }} .
+          docker push ${{ env.DOCKER_USERNAME }}/nginx:${{ env.TAG }}
+
+      # Set up SSH for Ansible
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
+          chmod 400 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ env.INSTANCE_IP }} >> ~/.ssh/known_hosts
+
+      # Install Ansible
+      - name: Install Ansible
+        run: |
+          sudo apt update
+          sudo apt install -y ansible
+
+      - name: Generate Ansible inventory
+        run: |
+          mkdir -p ansible
+          echo "[nginx_server]" > ansible/inventory.ini
+          echo "${INSTANCE_IP} ansible_user=ec2-user ansible_ssh_private_key_file=~/.ssh/id_rsa" >> ansible/inventory.ini
+      
+      - name: Debug inventory
+        run: cat ansible/inventory.ini
+
+      # Run Ansible Playbook
+      - name: Run Ansible Playbook
+        working-directory: ./ansible
+        run: |
+          ansible-playbook -i inventory.ini playbook.yml -e "instance_ip=${INSTANCE_IP} github_tag=${IMAGE_TAG} ssh_key_path=~/.ssh/id_rsa"
+
+      # Output deployment URL
+      - name: Deployment Info
+        run: |
+          echo "Deployed to: http://${{ env.DNS_NAME }}"

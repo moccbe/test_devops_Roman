@@ -1,0 +1,11 @@
+version: "3"
+services:
+  nginx:
+    build: .
+    image: moccbe/nginx:latest
+    container_name: nginx_web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./certs:/etc/nginx/certs:ro

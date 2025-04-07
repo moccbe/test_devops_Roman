@@ -1,0 +1,5 @@
+image_tag: v1
+docker_hub_username: moccbe
+image_name: devops_test_ro
+server_domain: "{{ image_tag }}.testte.pp.ua"
+cert_email: your@email.com
